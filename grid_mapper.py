@@ -1,7 +1,7 @@
 """
 Grid Mapper
-- Detects grid lines on a warped Go board image
-- Computes all 361 intersection points (19x19)
+- User clicks the 4 corner intersections of the grid (TL, TR, BR, BL)
+- Computes all 361 intersection points (19x19) from those corners
 - Overlays them on the image for visual verification
 - Saves the overlay as grid_overlay.jpg and intersection data as grid.npy
 """
@@ -12,35 +12,64 @@ import sys
 
 BOARD_SIZE = 19
 
-def find_grid_bounds(gray):
-    """Find the bounding box of the grid by detecting lines."""
-    # Threshold to find dark lines on light board
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+def select_grid_corners(img):
+    """Let the user click the 4 corner intersections of the grid."""
+    corners = []
+    h, w = img.shape[:2]
+    scale = min(1.0, 700 / max(h, w))
+    display = cv2.resize(img, (int(w * scale), int(h * scale)))
 
-    # Sum projections to find where lines cluster
-    h_proj = np.sum(binary, axis=1)  # horizontal projection (rows)
-    v_proj = np.sum(binary, axis=0)  # vertical projection (cols)
+    def on_click(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and len(corners) < 4:
+            corners.append((x, y))
+            labels = ["TL", "TR", "BR", "BL"]
+            print(f"  {labels[len(corners)-1]}: ({x}, {y})")
 
-    # Find the region with significant line density
-    h_thresh = np.max(h_proj) * 0.15
-    v_thresh = np.max(v_proj) * 0.15
+    win = "Click 4 grid corners: TL, TR, BR, BL (R=reset, Enter=confirm)"
+    cv2.namedWindow(win)
+    cv2.setMouseCallback(win, on_click)
 
-    h_lines = np.where(h_proj > h_thresh)[0]
-    v_lines = np.where(v_proj > v_thresh)[0]
+    while True:
+        vis = display.copy()
+        labels = ["TL", "TR", "BR", "BL"]
+        for i, pt in enumerate(corners):
+            cv2.circle(vis, pt, 6, (0, 0, 255), -1)
+            cv2.putText(vis, labels[i], (pt[0] + 10, pt[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        if len(corners) >= 2:
+            for i in range(len(corners) - 1):
+                cv2.line(vis, corners[i], corners[i + 1], (0, 255, 0), 1)
+        if len(corners) == 4:
+            cv2.line(vis, corners[3], corners[0], (0, 255, 0), 1)
+        cv2.imshow(win, vis)
+        key = cv2.waitKey(30) & 0xFF
+        if key == 13 and len(corners) == 4:
+            break
+        elif key == ord('r'):
+            corners.clear()
+            print("  Corners reset")
+        elif key == ord('q'):
+            cv2.destroyAllWindows()
+            sys.exit(0)
 
-    top, bottom = h_lines[0], h_lines[-1]
-    left, right = v_lines[0], v_lines[-1]
+    cv2.destroyAllWindows()
 
-    return top, bottom, left, right
+    pts = np.array([(int(x / scale), int(y / scale)) for x, y in corners], dtype=np.float32)
+    return pts  # TL, TR, BR, BL
 
-def compute_intersections(top, bottom, left, right):
-    """Compute evenly spaced 19x19 intersection coordinates."""
-    rows = np.linspace(top, bottom, BOARD_SIZE)
-    cols = np.linspace(left, right, BOARD_SIZE)
+def compute_intersections(corners):
+    """Compute 19x19 intersections by interpolating between the 4 corners."""
+    tl, tr, br, bl = corners
+
     intersections = np.zeros((BOARD_SIZE, BOARD_SIZE, 2), dtype=np.float32)
     for r in range(BOARD_SIZE):
+        rt = r / (BOARD_SIZE - 1)
+        left_pt = tl + rt * (bl - tl)
+        right_pt = tr + rt * (br - tr)
         for c in range(BOARD_SIZE):
-            intersections[r, c] = [cols[c], rows[r]]  # (x, y)
+            ct = c / (BOARD_SIZE - 1)
+            intersections[r, c] = left_pt + ct * (right_pt - left_pt)
+
     return intersections
 
 def main():
@@ -50,11 +79,9 @@ def main():
         print(f"Could not load {path}")
         return
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    top, bottom, left, right = find_grid_bounds(gray)
-    print(f"Grid bounds: top={top}, bottom={bottom}, left={left}, right={right}")
-
-    intersections = compute_intersections(top, bottom, left, right)
+    print("Click the 4 corner INTERSECTIONS of the grid (not the board edges).")
+    corners = select_grid_corners(img)
+    intersections = compute_intersections(corners)
 
     # Draw overlay
     overlay = img.copy()
@@ -63,22 +90,21 @@ def main():
             x, y = int(intersections[r, c, 0]), int(intersections[r, c, 1])
             cv2.circle(overlay, (x, y), 3, (0, 0, 255), -1)
 
-    # Draw grid lines on overlay for reference
     for r in range(BOARD_SIZE):
-        y = int(intersections[r, 0, 1])
-        x0 = int(intersections[r, 0, 0])
-        x1 = int(intersections[r, BOARD_SIZE - 1, 0])
-        cv2.line(overlay, (x0, y), (x1, y), (0, 0, 255), 1)
+        x0, y0 = int(intersections[r, 0, 0]), int(intersections[r, 0, 1])
+        x1, y1 = int(intersections[r, BOARD_SIZE - 1, 0]), int(intersections[r, BOARD_SIZE - 1, 1])
+        cv2.line(overlay, (x0, y0), (x1, y1), (0, 0, 255), 1)
     for c in range(BOARD_SIZE):
-        x = int(intersections[0, c, 0])
-        y0 = int(intersections[0, c, 1])
-        y1 = int(intersections[BOARD_SIZE - 1, c, 1])
-        cv2.line(overlay, (x, y0), (x, y1), (0, 0, 255), 1)
+        x0, y0 = int(intersections[0, c, 0]), int(intersections[0, c, 1])
+        x1, y1 = int(intersections[BOARD_SIZE - 1, c, 0]), int(intersections[BOARD_SIZE - 1, c, 1])
+        cv2.line(overlay, (x0, y0), (x1, y1), (0, 0, 255), 1)
 
     cv2.imwrite("grid_overlay.jpg", overlay)
     np.save("grid.npy", intersections)
     print("Saved grid_overlay.jpg and grid.npy")
 
+    cv2.namedWindow("Grid Overlay (press any key to close)", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Grid Overlay (press any key to close)", 700, 700)
     cv2.imshow("Grid Overlay (press any key to close)", overlay)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
