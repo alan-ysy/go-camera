@@ -1,38 +1,56 @@
+"""
+Raspberry Pi Camera Capture
+- Shows a live preview using the Picamera2 library
+- Press SPACE to save the current frame as a timestamped JPEG at full resolution
+- Press R to toggle 180° rotation (for upside-down mounted cameras)
+- Press Q to quit
+"""
+
 from picamera2 import Picamera2
-from picamera2.previews.qt import QGlPicamera2
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
-from libcamera import Transform
-import sys
+import cv2
+import time
 
-app = QApplication(sys.argv)
-cam = Picamera2()
-flipped = False
+PREVIEW_HEIGHT = 720
 
-def configure_camera():
-    cam.stop()
-    transform = Transform(hflip=flipped, vflip=flipped)
-    cam.configure(cam.create_preview_configuration(main={"size": (1920, 1080)}, transform=transform))
-    cam.start()
+def main():
+    picam2 = Picamera2()
+    # Use the full sensor resolution for the main stream
+    full_res = picam2.sensor_resolution
+    config = picam2.create_preview_configuration(main={"size": full_res, "format": "RGB888"})
+    picam2.configure(config)
+    picam2.start()
+    time.sleep(1)
 
-cam.configure(cam.create_preview_configuration(main={"size": (1920, 1080)}))
-window = QGlPicamera2(cam, width=800, height=600)
-window.setWindowTitle("Go Board Preview - R to rotate, Q to quit")
-cam.start()
+    flipped = False
+    print(f"Capturing at {full_res[0]}x{full_res[1]}")
+    print("SPACE = capture, R = flip 180°, Q = quit")
 
-original_key_handler = window.keyPressEvent
+    while True:
+        frame = picam2.capture_array()
 
-def key_handler(event):
-    global flipped
-    if event.key() == Qt.Key_R:
-        flipped = not flipped
-        configure_camera()
-    elif event.key() == Qt.Key_Q:
-        cam.stop()
-        app.quit()
-    else:
-        original_key_handler(event)
+        if flipped:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
 
-window.keyPressEvent = key_handler
-window.show()
-sys.exit(app.exec_())
+        # Scale down for the preview window
+        h, w = frame.shape[:2]
+        scale = PREVIEW_HEIGHT / h
+        preview = cv2.resize(frame, (int(w * scale), PREVIEW_HEIGHT))
+
+        cv2.imshow("Pi Camera Preview", preview)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord(' '):
+            filename = time.strftime("capture_%Y%m%d_%H%M%S.jpg")
+            cv2.imwrite(filename, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            print(f"Saved {filename} ({w}x{h})")
+        elif key == ord('r'):
+            flipped = not flipped
+            print(f"Rotation {'on' if flipped else 'off'}")
+        elif key == ord('q'):
+            break
+
+    picam2.stop()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
